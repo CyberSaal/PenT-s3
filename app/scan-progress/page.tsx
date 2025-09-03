@@ -1,47 +1,114 @@
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Shield, ArrowLeft, CheckCircle, Clock, Loader2 } from "lucide-react"
+import { Shield, ArrowLeft, CheckCircle, Clock, Loader2, LogOut } from "lucide-react"
 import Link from "next/link"
+import { createClient } from "@/lib/supabase/server"
+import { redirect } from "next/navigation"
 
-export default function ScanProgressPage() {
+async function handleLogout() {
+  "use server"
+  const supabase = await createClient()
+  await supabase.auth.signOut()
+  redirect("/auth/login")
+}
+
+export default async function ScanProgressPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ scan?: string }>
+}) {
+  const supabase = await createClient()
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser()
+
+  if (error || !user) {
+    redirect("/auth/login")
+  }
+
+  const params = await searchParams
+  const scanId = params.scan
+
+  if (!scanId) {
+    redirect("/")
+  }
+
+  // Get scan details with target information
+  const { data: scan } = await supabase
+    .from("scans")
+    .select(`
+      *,
+      targets (domain, description)
+    `)
+    .eq("id", scanId)
+    .eq("user_id", user.id)
+    .single()
+
+  if (!scan) {
+    redirect("/")
+  }
+
+  // Get scan logs
+  const { data: logs } = await supabase
+    .from("scan_logs")
+    .select("*")
+    .eq("scan_id", scanId)
+    .order("created_at", { ascending: false })
+    .limit(10)
+
+  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user.id).single()
+
+  // Define scan steps based on profile type
   const scanSteps = [
     {
       id: 1,
       name: "DNS Checks",
       description: "Analyzing DNS configuration and records",
-      status: "completed",
+      status: scan.progress >= 20 ? "completed" : scan.progress >= 10 ? "in-progress" : "pending",
       duration: "12s",
     },
     {
       id: 2,
       name: "HTTP Headers",
       description: "Examining security headers and server responses",
-      status: "completed",
+      status: scan.progress >= 40 ? "completed" : scan.progress >= 20 ? "in-progress" : "pending",
       duration: "8s",
     },
     {
       id: 3,
       name: "TLS Summary",
       description: "Testing SSL/TLS configuration and certificates",
-      status: "in-progress",
+      status: scan.progress >= 60 ? "completed" : scan.progress >= 40 ? "in-progress" : "pending",
       duration: "45s",
     },
     {
       id: 4,
       name: "Vulnerability Detection",
       description: "Scanning for known security vulnerabilities",
-      status: "pending",
-      duration: "2m 30s",
+      status: scan.progress >= 80 ? "completed" : scan.progress >= 60 ? "in-progress" : "pending",
+      duration: scan.profile_type === "active-light" ? "4m 30s" : "2m 30s",
     },
     {
       id: 5,
       name: "Report Building",
       description: "Compiling results and generating detailed report",
-      status: "pending",
+      status: scan.progress >= 100 ? "completed" : scan.progress >= 80 ? "in-progress" : "pending",
       duration: "15s",
     },
   ]
+
+  // Add additional steps for active-light scans
+  if (scan.profile_type === "active-light") {
+    scanSteps.splice(4, 0, {
+      id: 6,
+      name: "Active Testing",
+      description: "Performing safe active security tests",
+      status: scan.progress >= 70 ? "completed" : scan.progress >= 60 ? "in-progress" : "pending",
+      duration: "1m 45s",
+    })
+  }
 
   const getStepIcon = (status: string) => {
     switch (status) {
@@ -77,6 +144,21 @@ export default function ScanProgressPage() {
     }
   }
 
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "completed":
+        return "text-green-600"
+      case "running":
+        return "text-blue-600"
+      case "failed":
+        return "text-red-600"
+      default:
+        return "text-gray-600"
+    }
+  }
+
+  const estimatedTimeRemaining = Math.max(0, Math.ceil((100 - scan.progress) * 0.03)) // Rough estimate
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -98,9 +180,19 @@ export default function ScanProgressPage() {
               </Link>
             </nav>
           </div>
-          <Button variant="outline" className="border-blue-200 text-blue-600 hover:bg-blue-50 bg-transparent">
-            Sign in
-          </Button>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">Welcome, {profile?.first_name || user.email}</span>
+            <form action={handleLogout}>
+              <Button
+                variant="outline"
+                type="submit"
+                className="border-blue-200 text-blue-600 hover:bg-blue-50 bg-transparent flex items-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign out
+              </Button>
+            </form>
+          </div>
         </div>
       </header>
 
@@ -118,13 +210,19 @@ export default function ScanProgressPage() {
 
           {/* Page Header */}
           <div className="space-y-4">
-            <h1 className="text-4xl font-bold text-foreground">Security Scan in Progress</h1>
+            <h1 className="text-4xl font-bold text-foreground">
+              {scan.status === "completed" ? "Security Scan Complete" : "Security Scan in Progress"}
+            </h1>
             <div className="flex items-center gap-4 text-muted-foreground">
-              <span className="text-xl">example.com</span>
+              <span className="text-xl">{scan.targets?.domain}</span>
               <span>•</span>
-              <span>Passive-only scan</span>
-              <span>•</span>
-              <span>ETA: 2 minutes remaining</span>
+              <span className="capitalize">{scan.profile_type} scan</span>
+              {scan.status === "running" && (
+                <>
+                  <span>•</span>
+                  <span>ETA: {estimatedTimeRemaining} minutes remaining</span>
+                </>
+              )}
             </div>
           </div>
 
@@ -133,18 +231,19 @@ export default function ScanProgressPage() {
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-semibold text-foreground">Scan Progress</h2>
               <div className="text-right">
-                <div className="text-2xl font-bold text-blue-600">60%</div>
+                <div className="text-2xl font-bold text-blue-600">{scan.progress}%</div>
                 <div className="text-sm text-muted-foreground">Complete</div>
               </div>
             </div>
 
             <div className="w-full bg-gray-200 rounded-full h-3 mb-4">
-              <div className="bg-blue-600 h-3 rounded-full transition-all duration-500" style={{ width: "60%" }}></div>
+              <div
+                className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                style={{ width: `${scan.progress}%` }}
+              ></div>
             </div>
 
-            <div className="text-sm text-muted-foreground">
-              Step 3 of 5: Testing SSL/TLS configuration and certificates
-            </div>
+            <div className="text-sm text-muted-foreground">{scan.current_step}</div>
           </Card>
 
           {/* Detailed Steps */}
@@ -180,25 +279,40 @@ export default function ScanProgressPage() {
           <Card className="p-6">
             <h3 className="text-lg font-semibold text-foreground mb-4">Status Logs</h3>
             <div className="space-y-2 text-sm font-mono bg-gray-50 p-4 rounded-lg max-h-48 overflow-y-auto">
-              <div className="text-green-600">[12:34:01] DNS checks completed successfully</div>
-              <div className="text-green-600">[12:34:13] HTTP headers analysis finished</div>
-              <div className="text-blue-600">[12:34:21] Starting TLS configuration test...</div>
-              <div className="text-blue-600">[12:34:25] Testing SSL certificate validity</div>
-              <div className="text-blue-600">[12:34:28] Checking cipher suites and protocols</div>
-              <div className="text-gray-600">[12:34:30] TLS scan in progress...</div>
+              {logs && logs.length > 0 ? (
+                logs.map((log, index) => (
+                  <div key={index} className={getStatusColor(log.level)}>
+                    [{new Date(log.created_at).toLocaleTimeString()}] {log.message}
+                  </div>
+                ))
+              ) : (
+                <div className="text-gray-600">No logs available yet...</div>
+              )}
             </div>
           </Card>
 
           {/* Action Buttons */}
           <div className="flex gap-4 pt-6">
-            <Button variant="outline" className="px-8 py-3 bg-transparent" disabled>
-              Cancel Scan
-            </Button>
-            <Link href="/scan-results">
+            {scan.status === "running" ? (
+              <Button variant="outline" className="px-8 py-3 bg-transparent" disabled>
+                Cancel Scan
+              </Button>
+            ) : (
+              <Link href="/">
+                <Button variant="outline" className="px-8 py-3 bg-transparent">
+                  Back to Dashboard
+                </Button>
+              </Link>
+            )}
+            {scan.status === "completed" ? (
+              <Link href={`/scan-results?scan=${scanId}`}>
+                <Button className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3">View Results</Button>
+              </Link>
+            ) : (
               <Button className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3" disabled>
                 View Results (Available when complete)
               </Button>
-            </Link>
+            )}
           </div>
 
           {/* Info Card */}

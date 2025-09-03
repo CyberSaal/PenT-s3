@@ -2,10 +2,70 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Shield, ArrowLeft } from "lucide-react"
+import { Shield, ArrowLeft, LogOut } from "lucide-react"
 import Link from "next/link"
+import { createClient } from "@/lib/supabase/server"
+import { redirect } from "next/navigation"
 
-export default function AddTarget() {
+async function handleLogout() {
+  "use server"
+  const supabase = await createClient()
+  await supabase.auth.signOut()
+  redirect("/auth/login")
+}
+
+async function handleAddTarget(formData: FormData) {
+  "use server"
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (!user) {
+    redirect("/auth/login")
+  }
+
+  const domain = formData.get("domain") as string
+  const description = formData.get("description") as string
+
+  // Clean up domain input
+  let cleanDomain = domain.trim()
+  if (cleanDomain.startsWith("http://") || cleanDomain.startsWith("https://")) {
+    cleanDomain = new URL(cleanDomain).hostname
+  }
+
+  const { data, error } = await supabase
+    .from("targets")
+    .insert({
+      user_id: user.id,
+      domain: cleanDomain,
+      description: description || null,
+      status: "pending",
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error("Error adding target:", error)
+    return
+  }
+
+  redirect(`/verify-target?target=${data.id}`)
+}
+
+export default async function AddTarget() {
+  const supabase = await createClient()
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser()
+
+  if (error || !user) {
+    redirect("/auth/login")
+  }
+
+  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user.id).single()
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -27,9 +87,19 @@ export default function AddTarget() {
               </Link>
             </nav>
           </div>
-          <Button variant="outline" className="border-blue-200 text-blue-600 hover:bg-blue-50 bg-transparent">
-            Sign in
-          </Button>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">Welcome, {profile?.first_name || user.email}</span>
+            <form action={handleLogout}>
+              <Button
+                variant="outline"
+                type="submit"
+                className="border-blue-200 text-blue-600 hover:bg-blue-50 bg-transparent flex items-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign out
+              </Button>
+            </form>
+          </div>
         </div>
       </header>
 
@@ -50,7 +120,7 @@ export default function AddTarget() {
 
           {/* Add Target Form */}
           <Card className="p-8">
-            <form className="space-y-6">
+            <form action={handleAddTarget} className="space-y-6">
               <div className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="domain" className="text-base font-medium">
@@ -58,9 +128,11 @@ export default function AddTarget() {
                   </Label>
                   <Input
                     id="domain"
-                    type="url"
+                    name="domain"
+                    type="text"
                     placeholder="https://example.com or example.com"
                     className="text-base py-3"
+                    required
                   />
                   <p className="text-sm text-muted-foreground">
                     Enter the full URL or just the domain name you want to scan
@@ -71,7 +143,13 @@ export default function AddTarget() {
                   <Label htmlFor="description" className="text-base font-medium">
                     Description (Optional)
                   </Label>
-                  <Input id="description" type="text" placeholder="My company website" className="text-base py-3" />
+                  <Input
+                    id="description"
+                    name="description"
+                    type="text"
+                    placeholder="My company website"
+                    className="text-base py-3"
+                  />
                   <p className="text-sm text-muted-foreground">Add a description to help you identify this target</p>
                 </div>
               </div>
@@ -85,13 +163,11 @@ export default function AddTarget() {
               </div>
 
               <div className="flex gap-4 pt-4">
-                <Link href="/verify-target">
-                  <Button className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-lg flex-1">
-                    Add Target & Verify
-                  </Button>
-                </Link>
+                <Button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-lg flex-1">
+                  Add Target & Verify
+                </Button>
                 <Link href="/">
-                  <Button variant="outline" className="px-8 py-3 text-lg bg-transparent">
+                  <Button type="button" variant="outline" className="px-8 py-3 text-lg bg-transparent">
                     Cancel
                   </Button>
                 </Link>

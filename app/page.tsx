@@ -1,39 +1,36 @@
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Shield, Search, FileText, Plus, Play } from "lucide-react"
+import { Shield, Search, FileText, Plus, Play, LogOut } from "lucide-react"
 import Link from "next/link"
+import { createClient } from "@/lib/supabase/server"
+import { redirect } from "next/navigation"
 
-export default function Dashboard() {
-  const targets = [
-    {
-      id: 1,
-      domain: "example.com",
-      status: "verified",
-      lastScan: "2024-01-15",
-      healthScore: 85,
-      issues: 2,
-      severity: "medium",
-    },
-    {
-      id: 2,
-      domain: "myapp.vercel.app",
-      status: "verified",
-      lastScan: "2024-01-12",
-      healthScore: 92,
-      issues: 1,
-      severity: "low",
-    },
-    {
-      id: 3,
-      domain: "testsite.com",
-      status: "pending",
-      lastScan: null,
-      healthScore: null,
-      issues: 0,
-      severity: "none",
-    },
-  ]
+async function handleLogout() {
+  "use server"
+  const supabase = await createClient()
+  await supabase.auth.signOut()
+  redirect("/auth/login")
+}
+
+export default async function Dashboard() {
+  const supabase = await createClient()
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser()
+
+  if (error || !user) {
+    redirect("/auth/login")
+  }
+
+  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user.id).single()
+
+  const { data: targets } = await supabase
+    .from("targets")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
 
   const getHealthScoreColor = (score: number | null) => {
     if (!score) return "text-gray-500"
@@ -92,9 +89,19 @@ export default function Dashboard() {
               </Link>
             </nav>
           </div>
-          <Button variant="outline" className="border-blue-200 text-blue-600 hover:bg-blue-50 bg-transparent">
-            Sign in
-          </Button>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">Welcome, {profile?.first_name || user.email}</span>
+            <form action={handleLogout}>
+              <Button
+                variant="outline"
+                type="submit"
+                className="border-blue-200 text-blue-600 hover:bg-blue-50 bg-transparent flex items-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign out
+              </Button>
+            </form>
+          </div>
         </div>
       </header>
 
@@ -175,63 +182,77 @@ export default function Dashboard() {
           <div className="space-y-6">
             <h2 className="text-2xl font-semibold text-foreground">Your Targets</h2>
 
-            <div className="grid gap-4">
-              {targets.map((target) => (
-                <Card key={target.id} className="p-6">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-3">
-                        <h3 className="text-xl font-semibold text-foreground">{target.domain}</h3>
-                        <Badge variant={target.status === "verified" ? "secondary" : "outline"} className="text-xs">
-                          {target.status === "verified" ? "✓ Verified" : "⏳ Pending Verification"}
-                        </Badge>
-                        {target.severity !== "none" && getSeverityBadge(target.severity)}
+            {!targets || targets.length === 0 ? (
+              <Card className="p-12 text-center">
+                <div className="space-y-4">
+                  <Shield className="w-12 h-12 text-gray-400 mx-auto" />
+                  <h3 className="text-xl font-semibold text-foreground">No targets yet</h3>
+                  <p className="text-muted-foreground">Add your first target to start scanning for vulnerabilities</p>
+                  <Link href="/add-target">
+                    <Button className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 flex items-center gap-2 mx-auto">
+                      <Plus className="w-4 h-4" />
+                      Add Your First Target
+                    </Button>
+                  </Link>
+                </div>
+              </Card>
+            ) : (
+              <div className="grid gap-4">
+                {targets.map((target) => (
+                  <Card key={target.id} className="p-6">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3">
+                          <h3 className="text-xl font-semibold text-foreground">{target.domain}</h3>
+                          <Badge variant={target.status === "verified" ? "secondary" : "outline"} className="text-xs">
+                            {target.status === "verified" ? "✓ Verified" : "⏳ Pending Verification"}
+                          </Badge>
+                          {target.health_score && target.health_score < 70 && getSeverityBadge("medium")}
+                        </div>
+
+                        <div className="flex items-center gap-6 text-sm text-muted-foreground">
+                          {target.last_scan_at ? (
+                            <>
+                              <span>Last scan: {new Date(target.last_scan_at).toLocaleDateString()}</span>
+                              <span>•</span>
+                              <span className={getHealthScoreColor(target.health_score)}>
+                                Health Score: {target.health_score || 0}/100
+                              </span>
+                            </>
+                          ) : (
+                            <span>No scans yet</span>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-6 text-sm text-muted-foreground">
-                        {target.lastScan ? (
-                          <>
-                            <span>Last scan: {new Date(target.lastScan).toLocaleDateString()}</span>
-                            <span>•</span>
-                            <span className={getHealthScoreColor(target.healthScore)}>
-                              Health Score: {target.healthScore}/100
-                            </span>
-                            <span>•</span>
-                            <span>{target.issues} issues found</span>
-                          </>
+                      <div className="flex items-center gap-3">
+                        {target.status === "verified" ? (
+                          <Link href="/scan-setup">
+                            <Button className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2">
+                              <Play className="w-4 h-4" />
+                              Run Scan
+                            </Button>
+                          </Link>
                         ) : (
-                          <span>No scans yet</span>
+                          <Link href="/verify-target">
+                            <Button variant="outline" className="bg-transparent">
+                              Complete Verification
+                            </Button>
+                          </Link>
+                        )}
+                        {target.last_scan_at && (
+                          <Link href="/scan-results">
+                            <Button variant="outline" size="sm" className="bg-transparent">
+                              View Report
+                            </Button>
+                          </Link>
                         )}
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-3">
-                      {target.status === "verified" ? (
-                        <Link href="/scan-setup">
-                          <Button className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2">
-                            <Play className="w-4 h-4" />
-                            Run Scan
-                          </Button>
-                        </Link>
-                      ) : (
-                        <Link href="/verify-target">
-                          <Button variant="outline" className="bg-transparent">
-                            Complete Verification
-                          </Button>
-                        </Link>
-                      )}
-                      {target.lastScan && (
-                        <Link href="/scan-results">
-                          <Button variant="outline" size="sm" className="bg-transparent">
-                            View Report
-                          </Button>
-                        </Link>
-                      )}
-                    </div>
-                  </div>
-                </Card>
-              ))}
-            </div>
+                  </Card>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* How it works section */}
